@@ -5,10 +5,13 @@ pragma solidity ^0.8.12;
 /* solhint-disable no-inline-assembly */
 /* solhint-disable reason-string */
 
+import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
+import "@chainlink/contracts/src/v0.8/ConfirmedOwner.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 
+import "./sismo-protocol/zkConnect.sol";
 import "./BaseAccount.sol";
 
 /**
@@ -17,25 +20,41 @@ import "./BaseAccount.sol";
   *  has execute, eth handling methods
   *  has a single signer that can send requests through the entryPoint.
   */
-contract SimpleAccount is BaseAccount, UUPSUpgradeable, Initializable {
+contract SimpleAccount is 
+    BaseAccount, 
+    UUPSUpgradeable,
+    Initializable
+    { 
+    // ChainlinkClient would be used to make requests to an oracle which would verify a proof offchain.
+    
     using ECDSA for bytes32;
+    using Chainlink for Chainlink.Request; 
+
+    // bytes32 private jobId;
+    // uint256 private fee;
 
     //filler member, to push the nonce and owner to the same slot
-    // the "Initializeble" class takes 2 bytes in the first slot
+    // the "Initializable" class takes 2 bytes in the first slot
     bytes28 private _filler;
 
     //explicit sizes of nonce, to fit a single storage cell with "owner"
     uint96 private _nonce;
     address public owner;
+    bytes32 public vaultID;
+
+    uint256 public volume;
+
+    event RequestVolume(bytes32 indexed requestId, uint256 volume);
+
+    // event TransactionFullfilled(
+    //     address dest,
+    //     uint256 value,
+    //     bytes func
+    // );
 
     IEntryPoint private immutable _entryPoint;
 
     event SimpleAccountInitialized(IEntryPoint indexed entryPoint, address indexed owner);
-
-    modifier onlyOwner() {
-        _onlyOwner();
-        _;
-    }
 
     /// @inheritdoc BaseAccount
     function nonce() public view virtual override returns (uint256) {
@@ -47,13 +66,24 @@ contract SimpleAccount is BaseAccount, UUPSUpgradeable, Initializable {
         return _entryPoint;
     }
 
+    modifier onlyOwner() {
+        _onlyOwner();
+        _;
+    }
 
     // solhint-disable-next-line no-empty-blocks
     receive() external payable {}
 
-    constructor(IEntryPoint anEntryPoint) {
+    constructor(IEntryPoint anEntryPoint, bytes32 _vaultID) {
+        // setChainlinkToken(0x326C977E6efc84E512bB9C30f76E30c160eD06FB);
+        // setChainlinkOracle(0xCC79157eb46F5624204f47AB42b3906cAA40eaB7);
+        // jobId = "ca98366cc7314957b8c012c72f05aeeb";
+        // fee = (1 * LINK_DIVISIBILITY) / 10; // 0,1 * 10**18 (Varies by network and job)
         _entryPoint = anEntryPoint;
         _disableInitializers();
+
+        // Initialize our vaultID 
+        vaultID = _vaultID;
     }
 
     function _onlyOwner() internal view {
@@ -64,9 +94,33 @@ contract SimpleAccount is BaseAccount, UUPSUpgradeable, Initializable {
     /**
      * execute a transaction (called directly from owner, or by entryPoint)
      */
-    function execute(address dest, uint256 value, bytes calldata func) external {
+    function execute(address dest, uint256 value, bytes calldata func)
+        public
+        /**  returns (bytes32 requestId)  */
+    {
         _requireFromEntryPointOrOwner();
+        
+        // Sismo zkConnect on-cain proof verification
+        bool verified = zkConnect.verify('myProofID goes here');
+        require(verified, "zkConnect proof verification failed");
+
         _call(dest, value, func);
+
+        // Chainlink.Request memory req = buildChainlinkRequest(
+        //     jobId,
+        //     address(this),
+        //     this.fulfill.selector
+        // );
+
+        // // Set the URL to perform the GET request on
+        // req.add(
+        //     "get",
+        //     "https://api.bundler.fi/latestTransaction/10"
+        // );
+        // req.add("path", "response"); // Chainlink nodes 1.0.0 and later support this format
+
+        // // Sends the request
+        // return sendChainlinkRequest(req, fee);
     }
 
     /**
@@ -79,6 +133,17 @@ contract SimpleAccount is BaseAccount, UUPSUpgradeable, Initializable {
             _call(dest[i], 0, func[i]);
         }
     }
+
+    /**
+     * Receive the response in the form of uint256
+     */
+    // function fulfill(
+    //     bytes32 _requestId,
+    //     uint256 _volume
+    // ) public recordChainlinkFulfillment(_requestId) {
+    //     emit RequestVolume(_requestId, _volume);
+    //     volume = _volume;
+    // }
 
     /**
      * @dev The _entryPoint member is immutable, to reduce gas consumption.  To upgrade EntryPoint,
